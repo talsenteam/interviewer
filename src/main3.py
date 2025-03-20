@@ -1,5 +1,5 @@
-import os
-import json
+from os.path import exists
+from json import load, dump
 import asyncio
 from typing import Dict, List, Optional, Any, TypedDict, Union
 
@@ -371,6 +371,29 @@ def process_user_input(state: InterviewState) -> InterviewState:
     }
 
 
+def should_process_user_input(state: InterviewState) -> bool:
+    return (state["messages"] and
+            isinstance(state["messages"][-1], HumanMessage) and
+            state.get("processed_message_count", 0) < len(state["messages"]))
+
+
+def decide_next_edge(state: InterviewState):
+    if state["done"]:
+        return END
+    
+    if should_process_user_input(state):
+        return "process_user_input"
+    
+    if state["waiting_for_input"]:
+        return END
+    
+    return "generate_ai_message"
+
+
+def continue_or_end(state: InterviewState):
+    return END if state["waiting_for_input"] else "decide_next_field"
+
+
 def build_interview_graph():
     """Build the interview graph."""
     builder = StateGraph(InterviewState)
@@ -381,72 +404,37 @@ def build_interview_graph():
 
     builder.set_entry_point("decide_next_field")
 
-    builder.add_conditional_edges(
-        "decide_next_field",
-        lambda state: END if state["done"] else (
-            "process_user_input" if (
-                state["messages"] and
-                isinstance(state["messages"][-1], HumanMessage) and
-                state.get("processed_message_count",
-                          0) < len(state["messages"])
-            ) else (
-                END if state["waiting_for_input"] else "generate_ai_message"
-            )
-        )
-    )
-
-    builder.add_conditional_edges(
-        "generate_ai_message",
-        lambda state: END if state["waiting_for_input"] else "decide_next_field"
-    )
-
-    builder.add_conditional_edges(
-        "process_user_input",
-        lambda state: END if state["waiting_for_input"] else "decide_next_field"
-    )
-
+    builder.add_conditional_edges("decide_next_field", decide_next_edge)
+    builder.add_conditional_edges("generate_ai_message", continue_or_end)
+    builder.add_conditional_edges("process_user_input", continue_or_end)
     return builder.compile()
 
 
-def save_qa_dict(qa_dict: Dict) -> None:
-    """Save the QA dictionary to a JSON file."""
-    with open("qa_dictionary.json", "w") as f:
-        json.dump(qa_dict, f, indent=2)
+def save_qa_dict(qa_dict: Dict, file_path: str = "qa_dictionary.json") -> None:
+    with open(file_path, "w") as f:
+        dump(qa_dict, f, indent=2)
 
 
-def load_qa_dict() -> Dict:
-    """Load the QA dictionary from a JSON file, or return empty dict if not found."""
-    try:
-        with open("qa_dictionary.json", "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+def load_qa_dict(file_path: str) -> Dict:
+    if not exists(file_path):
         return {}
+    
+    with open(file_path, "r") as f:
+        return load(f)
 
 
 def handle_user_input(state: InterviewState, user_input: str) -> bool:
-    """
-    Handle user input and update the state accordingly.
-    
-    Args:
-        state: The current interview state
-        user_input: The input string from the user
-        
-    Returns:
-        bool: True to process the input, False to skip it
-    """
     if not user_input:
-        return False  # Skip empty input
+        return False
     
-    # Process valid input
     state["messages"].append(HumanMessage(content=user_input))
     state["waiting_for_input"] = False
     return True
 
 
-async def main():
-    """Main function to run the interview."""
+async def main(qa_catalog: Dict):
     state = {
-        "qa_dict": load_qa_dict(),
+        "qa_dict": qa_catalog,
         "messages": [],
         "current_field": None,
         "attempts": {},
@@ -456,8 +444,6 @@ async def main():
     }
 
     interview_graph = build_interview_graph()
-    print("Starting interview agent...")
-
     try:
         state = interview_graph.invoke(state)
     except Exception as e:
@@ -465,14 +451,16 @@ async def main():
         return
 
     while not state.get("done", False):
-        if state.get("waiting_for_input", True):
-            user_input = input("You: ").strip()
+        if not state.get("waiting_for_input", True):
+            state = interview_graph.invoke(state)
+            continue
             
-            if not handle_user_input(state, user_input):
-                continue
-
-        state = interview_graph.invoke(state)
+        user_input = input("You: ").strip()
         
+        if not handle_user_input(state, user_input):
+            continue
+            
+        state = interview_graph.invoke(state)
         save_qa_dict(state["qa_dict"])
 
     if "qa_dict" in state:
@@ -481,4 +469,5 @@ async def main():
     
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    qa_catalog = load_qa_dict("qa_dictionary.json")
+    asyncio.run(main(qa_catalog))
