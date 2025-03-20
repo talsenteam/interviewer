@@ -423,6 +423,26 @@ def load_qa_dict() -> Dict:
         return {}
 
 
+def handle_user_input(state: InterviewState, user_input: str) -> bool:
+    """
+    Handle user input and update the state accordingly.
+    
+    Args:
+        state: The current interview state
+        user_input: The input string from the user
+        
+    Returns:
+        bool: True to process the input, False to skip it
+    """
+    if not user_input:
+        return False  # Skip empty input
+    
+    # Process valid input
+    state["messages"].append(HumanMessage(content=user_input))
+    state["waiting_for_input"] = False
+    return True
+
+
 async def main():
     """Main function to run the interview."""
     state = {
@@ -446,34 +466,14 @@ async def main():
 
     while not state.get("done", False):
         if state.get("waiting_for_input", True):
-            try:
-                user_input = input("You: ").strip()
-            except KeyboardInterrupt:
-                print("\nInterview terminated by user.")
-                break
-            except Exception as e:
-                print(f"Error getting user input: {e}")
-                break
-
-            if not user_input:
+            user_input = input("You: ").strip()
+            
+            if not handle_user_input(state, user_input):
                 continue
-            if user_input.lower() in ["exit", "quit", "bye"]:
-                print("Agent: Thank you for your time. Goodbye!")
-                break
 
-            state["messages"].append(HumanMessage(content=user_input))
-            state["waiting_for_input"] = False
-
-        try:
-            state = interview_graph.invoke(state)
-        except Exception as e:
-            print(f"Error processing response: {e}")
-            break
-
-        try:
-            save_qa_dict(state["qa_dict"])
-        except Exception as e:
-            print(f"Error saving QA dictionary: {e}")
+        state = interview_graph.invoke(state)
+        
+        save_qa_dict(state["qa_dict"])
 
     if "qa_dict" in state:
         save_qa_dict(state["qa_dict"])
